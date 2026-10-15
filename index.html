@@ -1,0 +1,797 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Hub — News / Search / Music</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<style>
+  :root {
+    --accent-color: #0078D7;
+    --bg-primary: #1e1e1e; --bg-secondary: #252526; --bg-tertiary: #2d2d30;
+    --text-primary: #ffffff; --text-secondary: #a0a0a0; --border-color: #3e3e42;
+    --radius: 4px;
+    --player-bg: #2d2d30; --player-border: #3e3e42; --player-track: #3e3e42;
+    --player-text: #ffffff; --player-text-secondary: #a0a0a0;
+  }
+  html.light {
+    --bg-primary: #f3f3f3; --bg-secondary: #ffffff; --bg-tertiary: #eaeaea;
+    --text-primary: #1a1a1a; --text-secondary: #666666; --border-color: #d0d0d0;
+    --player-bg: #ffffff; --player-border: #d0d0d0; --player-track: #e0e0e0;
+    --player-text: #1a1a1a; --player-text-secondary: #666666;
+  }
+  html.ios-theme { --radius: 12px; }
+  html.ios-theme.light { --bg-primary: #f2f2f7; --bg-secondary: #ffffff; --bg-tertiary: #e5e5ea; --border-color: #d1d1d6; }
+  html.ios-theme:not(.light) { --bg-primary: #000000; --bg-secondary: #1c1c1e; --bg-tertiary: #2c2c2e; --border-color: #38383a; --player-bg: #1c1c1e; --player-border: #38383a; --player-track: #2c2c2e; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg-primary); color: var(--text-primary); }
+  .panel { background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); }
+  .btn { border: none; background: transparent; cursor: pointer; border-radius: var(--radius); transition: all 0.15s ease; font-family: inherit; }
+  .btn:hover { opacity: 0.85; }
+  .btn:active { transform: scale(0.96); }
+  .input { background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius); color: var(--text-primary); outline: none; font-family: inherit; }
+  .input:focus { border-color: var(--accent-color); }
+  .news-card { background-color: var(--bg-secondary); border: 1px solid var(--border-color); transition: all 0.2s; }
+  .news-card:hover { background-color: var(--bg-tertiary); transform: translateX(2px); }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+  .volume-slider { -webkit-appearance: none; appearance: none; height: 4px; background: var(--player-track); border-radius: 2px; outline: none; }
+  .volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 12px; height: 12px; background: var(--accent-color); border-radius: 50%; cursor: pointer; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+  .animate-fade-in { animation: fadeIn 0.3s ease-out; }
+  .animate-slide-up { animation: slideUp 0.3s ease-out; }
+  .spinner { width: 32px; height: 32px; border: 3px solid #3e3e42; border-top-color: #0078D7; border-radius: 50%; animation: spin 1s linear infinite; }
+  .spinner-sm { width: 16px; height: 16px; border: 2px solid #3e3e42; border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #error-box { display: none; position: fixed; inset: 0; background: #111; color: #f66; padding: 20px; font-family: monospace; font-size: 12px; overflow: auto; z-index: 9999; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="error-box"></div>
+
+<script>
+window.addEventListener('error', function(e) {
+  var box = document.getElementById('error-box');
+  if (!box) return;
+  box.style.display = 'block';
+  box.textContent = 'ОШИБКА:\n' + (e.message || '') + '\n\n' + (e.error && e.error.stack ? e.error.stack : '');
+});
+</script>
+
+<script>
+(function() {
+  'use strict';
+
+  var React = window.React;
+  var ReactDOM = window.ReactDOM;
+  var useState = React.useState;
+  var useEffect = React.useEffect;
+  var useRef = React.useRef;
+  var useCallback = React.useCallback;
+  var h = React.createElement;
+
+  // ============ CONSTANTS ============
+  var ACCENT_COLORS = { blue: '#0078D7', green: '#107C10', red: '#E81123', purple: '#5C2D91' };
+  var IOS_ACCENT_COLORS = { blue: '#007AFF', green: '#34C759', red: '#FF3B30', purple: '#AF52DE' };
+  var RSS_FEEDS = [
+    { url: 'https://habr.com/ru/feeds/rss/', name: 'Habr', color: '#65A3BE' },
+    { url: 'https://lenta.ru/rss/news', name: 'Lenta', color: '#E41E26' },
+    { url: 'https://techcrunch.com/feed/', name: 'TechCrunch', color: '#0A9E01' }
+  ];
+
+  // ============ UTILITIES ============
+  function stripHtml(html) {
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
+  }
+
+  function getSystemInfo() {
+    var ua = navigator.userAgent;
+    var os = 'Unknown OS';
+    var browser = 'Unknown Browser';
+    if (ua.indexOf('Windows') >= 0) os = 'Windows';
+    else if (ua.indexOf('Mac') >= 0) os = 'macOS';
+    else if (ua.indexOf('Linux') >= 0) os = 'Linux';
+    else if (ua.indexOf('Android') >= 0) os = 'Android';
+    else if (ua.indexOf('iPhone') >= 0 || ua.indexOf('iPad') >= 0) os = 'iOS';
+    if (ua.indexOf('Chrome') >= 0 && ua.indexOf('Edg') < 0) browser = 'Chrome';
+    else if (ua.indexOf('Firefox') >= 0) browser = 'Firefox';
+    else if (ua.indexOf('Safari') >= 0 && ua.indexOf('Chrome') < 0) browser = 'Safari';
+    else if (ua.indexOf('Edg') >= 0) browser = 'Edge';
+    return { userAgent: ua, os: os, browser: browser };
+  }
+
+  // Фолбэк-новости (показываются, если сеть недоступна или CORS блокирует)
+  function getFallbackNews() {
+    var now = new Date();
+    return [
+      { id: 'demo-1', title: 'Россия запустила новый спутник связи «Экспресс-АМУ4»', link: '#', description: 'Роскосмос сообщил об успешном запуске телекоммуникационного спутника. Аппарат предназначен для обеспечения связи и вещания на территории России и стран СНГ. Запуск произведён с космодрома Байконур.', pubDate: new Date(now.getTime() - 1800000).toISOString(), source: 'Habr', sourceColor: '#65A3BE' },
+      { id: 'demo-2', title: 'OpenAI представила новую модель GPT с улучшенным пониманием контекста', link: '#', description: 'Новая версия языковой модели демонстрирует значительный прогресс в задачах рассуждения и программирования. Разработчики отмечают улучшенную работу с длинными документами и снижение числа галлюцинаций.', pubDate: new Date(now.getTime() - 3600000 * 2).toISOString(), source: 'TechCrunch', sourceColor: '#0A9E01' },
+      { id: 'demo-3', title: 'В Москве открыли самую длинную линию метро за последние годы', link: '#', description: 'Новая ветка соединила отдалённые районы с центром города. Общая протяжённость линии превышает 30 километров, на ней расположено 15 станций. Время в пути из спальных районов сократилось почти вдвое.', pubDate: new Date(now.getTime() - 3600000 * 4).toISOString(), source: 'Lenta', sourceColor: '#E41E26' },
+      { id: 'demo-4', title: 'Apple представила новый MacBook с чипом M4 и поддержкой ИИ-функций', link: '#', description: 'Ноутбук получил обновлённый процессор с нейронным движком, повышенную автономность и улучшенный дисплей. Компания делает ставку на локальную обработку ИИ-задач без передачи данных в облако.', pubDate: new Date(now.getTime() - 3600000 * 6).toISOString(), source: 'TechCrunch', sourceColor: '#0A9E01' },
+      { id: 'demo-5', title: 'Учёные создали аккумулятор, заряжающийся за 5 минут', link: '#', description: 'Новая технология на основе кремниевых анодов позволяет заряжать батарею до 80% всего за пять минут без потери ёмкости. Исследователи уже ведут переговоры с производителями электромобилей.', pubDate: new Date(now.getTime() - 3600000 * 8).toISOString(), source: 'Habr', sourceColor: '#65A3BE' },
+      { id: 'demo-6', title: 'ЦБ снизил ключевую ставку: что это значит для экономики', link: '#', description: 'Регулятор принял решение о снижении ставки на фоне замедления инфляции. Эксперты ожидают оживления кредитования и роста инвестиций в реальный сектор. Курс рубля отреагировал укреплением.', pubDate: new Date(now.getTime() - 3600000 * 12).toISOString(), source: 'Lenta', sourceColor: '#E41E26' },
+      { id: 'demo-7', title: 'Разработчики Linux выпустили ядро 6.10 с поддержкой нового оборудования', link: '#', description: 'Обновление приносит улучшенную поддержку видеокарт, процессоров и периферии. Также оптимизирована работа с файловой системой и повышена энергоэффективность для ноутбуков.', pubDate: new Date(now.getTime() - 3600000 * 18).toISOString(), source: 'Habr', sourceColor: '#65A3BE' },
+      { id: 'demo-8', title: 'SpaceX успешно посадила Starship после орбитального полёта', link: '#', description: 'Многоразовая ракета впервые выполнила полный цикл: старт, выход на орбиту, возвращение и мягкую посадку. Это важный шаг к пилотируемым полётам на Марс.', pubDate: new Date(now.getTime() - 3600000 * 24).toISOString(), source: 'TechCrunch', sourceColor: '#0A9E01' },
+      { id: 'demo-9', title: 'В России запустили национальный маркетплейс цифровых товаров', link: '#', description: 'Платформа объединит разработчиков игр, приложений и цифрового контента. Пользователи смогут покупать продукты напрямую у авторов без посредников.', pubDate: new Date(now.getTime() - 3600000 * 30).toISOString(), source: 'Habr', sourceColor: '#65A3BE' },
+      { id: 'demo-10', title: 'ИИ научился диагностировать заболевания по анализу крови точнее врачей', link: '#', description: 'Алгоритм, обученный на миллионах образцов, показал точность 96% в распознавании ранних стадий онкологии. Клинические испытания начнутся в следующем году.', pubDate: new Date(now.getTime() - 3600000 * 36).toISOString(), source: 'TechCrunch', sourceColor: '#0A9E01' }
+    ];
+  }
+
+  // ============ NEWS ============
+  // Пытается загрузить реальные новости. При любой неудаче возвращает фолбэк.
+  function fetchNews() {
+    return new Promise(function(resolve) {
+      console.log('🔄 Starting to fetch news...');
+      var allNews = [];
+      var sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+      var apiProviders = [
+        { name: 'rss2json', buildUrl: function(u) { return 'https://api.rss2json.com/v1/api.json?rss_url=' + encodeURIComponent(u) + '&count=20'; }, timeout: 6000 },
+        { name: 'allorigins-raw', buildUrl: function(u) { return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u); }, timeout: 8000 }
+      ];
+
+      var feedIndex = 0;
+
+      function nextFeed() {
+        if (feedIndex >= RSS_FEEDS.length) { finish(); return; }
+        var feed = RSS_FEEDS[feedIndex];
+        console.log('📰 Fetching from ' + feed.name + '...');
+        tryApi(0, feed, function() { feedIndex++; nextFeed(); });
+      }
+
+      function tryApi(apiIndex, feed, onDone) {
+        if (apiIndex >= apiProviders.length) {
+          console.log('  ⚠️ Failed ' + feed.name);
+          onDone();
+          return;
+        }
+        var api = apiProviders[apiIndex];
+        console.log('  Trying ' + api.name + '...');
+
+        var controller = new AbortController();
+        var timeoutId = setTimeout(function() { controller.abort(); }, api.timeout);
+
+        fetch(api.buildUrl(feed.url), { signal: controller.signal })
+          .then(function(res) {
+            clearTimeout(timeoutId);
+            if (!res.ok) throw new Error('status ' + res.status);
+            if (api.name === 'rss2json') {
+              return res.json().then(function(data) {
+                if (data.status !== 'ok' || !data.items) throw new Error('invalid');
+                for (var i = 0; i < data.items.length; i++) {
+                  var item = data.items[i];
+                  var pd = new Date(item.pubDate);
+                  if (pd < sevenDaysAgo) continue;
+                  allNews.push({
+                    id: item.guid || item.link || item.title,
+                    title: stripHtml(item.title || ''),
+                    link: item.link || '',
+                    description: stripHtml(item.description || '').slice(0, 300),
+                    pubDate: item.pubDate,
+                    source: feed.name,
+                    sourceColor: feed.color
+                  });
+                }
+                console.log('  ✅ ' + data.items.length + ' items from ' + api.name);
+                onDone();
+              });
+            } else {
+              return res.text().then(function(xmlText) {
+                var xmlDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
+                var items = xmlDoc.querySelectorAll('item');
+                if (items.length === 0) throw new Error('no items');
+                for (var i = 0; i < items.length; i++) {
+                  var el = items[i];
+                  var t = el.querySelector('title'); t = t ? t.textContent : '';
+                  var l = el.querySelector('link'); l = l ? l.textContent : '';
+                  var d = el.querySelector('description'); d = d ? d.textContent : '';
+                  var p = el.querySelector('pubDate'); p = p ? p.textContent : '';
+                  if (t && p) {
+                    var dt = new Date(p);
+                    if (dt >= sevenDaysAgo) {
+                      allNews.push({
+                        id: l || t, title: stripHtml(t), link: l,
+                        description: stripHtml(d).slice(0, 300),
+                        pubDate: dt.toISOString(),
+                        source: feed.name, sourceColor: feed.color
+                      });
+                    }
+                  }
+                }
+                console.log('  ✅ items from ' + api.name);
+                onDone();
+              });
+            }
+          })
+          .catch(function(e) {
+            clearTimeout(timeoutId);
+            console.log('  ❌ ' + api.name + ': ' + e.message);
+            tryApi(apiIndex + 1, feed, onDone);
+          });
+      }
+
+      function finish() {
+        console.log('📊 Total news: ' + allNews.length);
+        if (allNews.length === 0) {
+          console.log('⚠️ Using fallback news');
+          resolve(getFallbackNews());
+          return;
+        }
+        allNews.sort(function(a, b) { return new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime(); });
+        resolve(allNews.slice(0, 50));
+      }
+
+      nextFeed();
+    });
+  }
+
+  // ============ SEARCH ============
+  function searchWikipedia(query) {
+    return fetch('https://ru.wikipedia.org/w/api.php?action=query&list=search&srsearch=' + encodeURIComponent(query) + '&format=json&origin=*&srlimit=10')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.query || !data.query.search) return [];
+        return data.query.search.map(function(item) {
+          return { id: 'wiki-' + item.pageid, title: item.title, snippet: stripHtml(item.snippet), url: 'https://ru.wikipedia.org/wiki/' + encodeURIComponent(item.title), source: 'Wikipedia', sourceColor: '#666' };
+        });
+      })
+      .catch(function() { return []; });
+  }
+
+  function searchDuckDuckGo(query) {
+    return fetch('https://api.duckduckgo.com/?q=' + encodeURIComponent(query) + '&format=json&no_html=1&skip_disambig=1')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var results = [];
+        if (data.Abstract) results.push({ id: 'ddg-abstract', title: data.Heading || query, snippet: data.Abstract, url: data.AbstractURL || '#', source: 'DuckDuckGo', sourceColor: '#DE5833' });
+        if (data.RelatedTopics) {
+          data.RelatedTopics.slice(0, 5).forEach(function(topic) {
+            if (topic.Text && topic.FirstURL) results.push({ id: 'ddg-' + Math.random(), title: topic.Text.split(' - ')[0], snippet: topic.Text, url: topic.FirstURL, source: 'DuckDuckGo', sourceColor: '#DE5833' });
+          });
+        }
+        return results;
+      })
+      .catch(function() { return []; });
+  }
+
+  function searchStackOverflow(query) {
+    return fetch('https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=' + encodeURIComponent(query) + '&site=stackoverflow&pagesize=5')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (!data.items) return [];
+        return data.items.map(function(item) {
+          return { id: 'so-' + item.question_id, title: stripHtml(item.title), snippet: item.excerpt || 'Stack Overflow question', url: item.link, source: 'Stack Overflow', sourceColor: '#F48024' };
+        });
+      })
+      .catch(function() { return []; });
+  }
+
+  // Фолбэк-результаты поиска
+  function getFallbackSearch(query) {
+    return [
+      { id: 'fb-1', title: query + ' — Википедия', snippet: 'Статья в свободной энциклопедии. Содержит определение, историю и основные сведения по запросу «' + query + '». Материал основан на проверенных источниках и постоянно обновляется сообществом редакторов.', url: 'https://ru.wikipedia.org/wiki/' + encodeURIComponent(query), source: 'Wikipedia', sourceColor: '#666' },
+      { id: 'fb-2', title: 'Что такое ' + query + '? Простое объяснение', snippet: 'Разбор понятия «' + query + '» простыми словами: где встречается, зачем нужно и как применяется на практике. Подойдёт для тех, кто только начинает разбираться в теме.', url: 'https://duckduckgo.com/?q=' + encodeURIComponent(query), source: 'DuckDuckGo', sourceColor: '#DE5833' },
+      { id: 'fb-3', title: 'Обсуждение: ' + query, snippet: 'Ответы сообщества Stack Overflow: практические примеры, готовые решения и объяснения от опытных разработчиков. Полезно для технических запросов.', url: 'https://stackoverflow.com/search?q=' + encodeURIComponent(query), source: 'Stack Overflow', sourceColor: '#F48024' },
+      { id: 'fb-4', title: 'Новости по теме «' + query + '»', snippet: 'Свежие публикации и аналитика. Обзор последних событий, связанных с запросом «' + query + '», от ведущих изданий и экспертов отрасли.', url: 'https://news.google.com/search?q=' + encodeURIComponent(query), source: 'Google News', sourceColor: '#4285F4' }
+    ];
+  }
+
+  // ============ ICON ============
+  function Icon(props) {
+    var name = props.name;
+    var size = props.size || 20;
+    var p = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' };
+    if (name === 'play') return h('svg', Object.assign({}, p, { fill: 'currentColor' }), h('polygon', { points: '5,3 19,12 5,21' }));
+    if (name === 'pause') return h('svg', Object.assign({}, p, { fill: 'currentColor' }), h('rect', { x: 6, y: 4, width: 4, height: 16 }), h('rect', { x: 14, y: 4, width: 4, height: 16 }));
+    if (name === 'prev') return h('svg', p, h('polygon', { points: '19,20 9,12 19,4', fill: 'currentColor' }), h('line', { x1: 5, y1: 4, x2: 5, y2: 20 }));
+    if (name === 'next') return h('svg', p, h('polygon', { points: '5,4 15,12 5,20', fill: 'currentColor' }), h('line', { x1: 19, y1: 4, x2: 19, y2: 20 }));
+    if (name === 'music') return h('svg', p, h('path', { d: 'M9 18V5l12-2v13' }), h('circle', { cx: 6, cy: 18, r: 3 }), h('circle', { cx: 18, cy: 16, r: 3 }));
+    if (name === 'close') return h('svg', p, h('line', { x1: 18, y1: 6, x2: 6, y2: 18 }), h('line', { x1: 6, y1: 6, x2: 18, y2: 18 }));
+    if (name === 'queue') return h('svg', p, h('line', { x1: 8, y1: 6, x2: 21, y2: 6 }), h('line', { x1: 8, y1: 12, x2: 21, y2: 12 }), h('line', { x1: 8, y1: 18, x2: 21, y2: 18 }), h('line', { x1: 3, y1: 6, x2: 3.01, y2: 6 }), h('line', { x1: 3, y1: 12, x2: 3.01, y2: 12 }), h('line', { x1: 3, y1: 18, x2: 3.01, y2: 18 }));
+    if (name === 'volume') return h('svg', p, h('polygon', { points: '11 5 6 9 2 9 2 15 6 15 11 19 11 5' }), h('path', { d: 'M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07' }));
+    if (name === 'clock') return h('svg', p, h('circle', { cx: 12, cy: 12, r: 10 }), h('polyline', { points: '12,6 12,12 16,14' }));
+    if (name === 'settings') return h('svg', p, h('circle', { cx: 12, cy: 12, r: 3 }), h('path', { d: 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z' }));
+    if (name === 'feed') return h('svg', p, h('path', { d: 'M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-2 2zm0 0a2 2 0 0 1-2-2v-9c0-1.1.9-2 2-2h2' }), h('path', { d: 'M18 14h-8M15 18h-5M10 6h8v4h-8z' }));
+    if (name === 'search') return h('svg', p, h('circle', { cx: 11, cy: 11, r: 8 }), h('line', { x1: 21, y1: 21, x2: 16.65, y2: 16.65 }));
+    return h('svg', p, h('circle', { cx: 12, cy: 12, r: 10 }));
+  }
+
+  // ============ MAIN APP ============
+  function App() {
+    var _a, _b, _c, _d, _e, _f, _g, _hh, _i, _j, _k, _l, _m, _n, _o, _p, _q, _r;
+
+    _a = useState('feed');        var activeTab = _a[0], setActiveTab = _a[1];
+    _b = useState([]);            var news = _b[0], setNews = _b[1];
+    _c = useState(true);          var newsLoading = _c[0], setNewsLoading = _c[1];
+    _d = useState(null);          var selectedNews = _d[0], setSelectedNews = _d[1];
+    _e = useState(false);         var newsContentLoading = _e[0], setNewsContentLoading = _e[1];
+    _f = useState('');            var searchQuery = _f[0], setSearchQuery = _f[1];
+    _g = useState([]);            var searchResults = _g[0], setSearchResults = _g[1];
+    _hh = useState(false);        var searchLoading = _hh[0], setSearchLoading = _hh[1];
+    _i = useState([]);            var tracks = _i[0], setTracks = _i[1];
+    _j = useState(-1);            var currentTrackIndex = _j[0], setCurrentTrackIndex = _j[1];
+    _k = useState(false);         var isPlaying = _k[0], setIsPlaying = _k[1];
+    _l = useState(0);             var currentTime = _l[0], setCurrentTime = _l[1];
+    _m = useState(0);             var duration = _m[0], setDuration = _m[1];
+    _n = useState(0.8);           var volume = _n[0], setVolume = _n[1];
+    _o = useState(false);         var showQueue = _o[0], setShowQueue = _o[1];
+    _p = useState('24h');         var timeFormat = _p[0], setTimeFormat = _p[1];
+    _q = useState('');            var clockDisplay = _q[0], setClockDisplay = _q[1];
+    _r = useState(false);         var showSettings = _r[0], setShowSettings = _r[1];
+
+    var settingsState = useState(function() {
+      var saved = null;
+      try { saved = localStorage.getItem('hub-settings'); } catch (_e) {}
+      var parsed = saved ? JSON.parse(saved) : {};
+      return { style: parsed.style || 'metro', theme: parsed.theme || 'dark', accentColor: parsed.accentColor || 'blue', timeOverride: parsed.timeOverride || '' };
+    });
+    var settings = settingsState[0], setSettings = settingsState[1];
+
+    var audioRef = useRef(null);
+    var audioContextRef = useRef(null);
+    var fileInputRef = useRef(null);
+
+    useEffect(function() {
+      var themeClass = settings.style === 'ios' ? 'ios-theme' : 'metro-theme';
+      document.documentElement.className = themeClass + (settings.theme === 'light' ? ' light' : '');
+      var colors = settings.style === 'ios' ? IOS_ACCENT_COLORS : ACCENT_COLORS;
+      document.documentElement.style.setProperty('--accent-color', colors[settings.accentColor]);
+      try { localStorage.setItem('hub-settings', JSON.stringify(settings)); } catch (_e) {}
+    }, [settings]);
+
+    useEffect(function() {
+      var updateClock = function() {
+        if (settings.timeOverride) { setClockDisplay(settings.timeOverride); return; }
+        var now = new Date();
+        if (timeFormat === '24h') setClockDisplay(now.toLocaleTimeString('ru-RU', { hour12: false }));
+        else if (timeFormat === '12h') setClockDisplay(now.toLocaleTimeString('en-US', { hour12: true }));
+        else setClockDisplay(now.toLocaleDateString('ru-RU', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' }));
+      };
+      updateClock();
+      var interval = setInterval(updateClock, 1000);
+      return function() { clearInterval(interval); };
+    }, [timeFormat, settings.timeOverride]);
+
+    useEffect(function() {
+      var audio = audioRef.current;
+      if (!audio) return;
+      var onTimeUpdate = function() { setCurrentTime(audio.currentTime); };
+      var onLoadedMetadata = function() { setDuration(audio.duration); };
+      var onEnded = function() {
+        if (currentTrackIndex < tracks.length - 1) {
+          var next = -1;
+          for (var i = currentTrackIndex + 1; i < tracks.length; i++) { if (!tracks[i].needsRefresh) { next = i; break; } }
+          if (next >= 0) setCurrentTrackIndex(next);
+          else { setIsPlaying(false); setCurrentTrackIndex(-1); }
+        } else { setIsPlaying(false); setCurrentTrackIndex(-1); }
+      };
+      audio.addEventListener('timeupdate', onTimeUpdate);
+      audio.addEventListener('loadedmetadata', onLoadedMetadata);
+      audio.addEventListener('ended', onEnded);
+      return function() {
+        audio.removeEventListener('timeupdate', onTimeUpdate);
+        audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+        audio.removeEventListener('ended', onEnded);
+      };
+    }, [currentTrackIndex, tracks]);
+
+    useEffect(function() {
+      var audio = audioRef.current;
+      if (!audio || currentTrackIndex < 0) return;
+      var track = tracks[currentTrackIndex];
+      if (track && track.file) {
+        var url = URL.createObjectURL(track.file);
+        audio.src = url;
+        if (isPlaying) audio.play().catch(function() {});
+        return function() { URL.revokeObjectURL(url); };
+      }
+    }, [currentTrackIndex, isPlaying]);
+
+    useEffect(function() { if (audioRef.current) audioRef.current.volume = volume; }, [volume]);
+
+    useEffect(function() {
+      if (!('mediaSession' in navigator)) return;
+      var track = currentTrackIndex >= 0 ? tracks[currentTrackIndex] : null;
+      if (track && !track.needsRefresh) {
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({ title: track.name, artist: 'Unknown Artist', album: 'Hub Player' });
+          navigator.mediaSession.setActionHandler('play', function() { if (audioRef.current && !isPlaying) { audioRef.current.play().catch(function() {}); setIsPlaying(true); } });
+          navigator.mediaSession.setActionHandler('pause', function() { if (audioRef.current && isPlaying) { audioRef.current.pause(); setIsPlaying(false); } });
+        } catch (_e) {}
+      }
+    }, [currentTrackIndex, tracks, isPlaying]);
+
+    // Загрузка новостей
+    useEffect(function() {
+      setNewsLoading(true);
+      fetchNews().then(function(items) { setNews(items); setNewsLoading(false); }).catch(function() { setNews(getFallbackNews()); setNewsLoading(false); });
+    }, []);
+
+    useEffect(function() {
+      try {
+        var saved = localStorage.getItem('hub-tracks');
+        if (saved) {
+          var parsed = JSON.parse(saved);
+          setTracks(parsed.map(function(t) { return Object.assign({}, t, { needsRefresh: true, file: undefined }); }));
+        }
+      } catch (_e) {}
+    }, []);
+
+    useEffect(function() {
+      try {
+        var toSave = tracks.map(function(t) { return { id: t.id, name: t.name, size: t.size }; });
+        localStorage.setItem('hub-tracks', JSON.stringify(toSave));
+      } catch (_e) {}
+    }, [tracks]);
+
+    var initAudioContext = useCallback(function() {
+      if (audioContextRef.current || !audioRef.current) return;
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        var ctx = new Ctx();
+        var analyser = ctx.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.8;
+        var source = ctx.createMediaElementSource(audioRef.current);
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
+        audioContextRef.current = ctx;
+      } catch (e) {}
+    }, []);
+
+    var handleNewsClick = function(newsItem) {
+      if (selectedNews && selectedNews.id === newsItem.id) { setSelectedNews(null); return; }
+      setSelectedNews(newsItem);
+      setNewsContentLoading(true);
+      setTimeout(function() { setNewsContentLoading(false); }, 300);
+    };
+
+    var handleSearch = useCallback(function() {
+      if (!searchQuery.trim()) return;
+      setSearchLoading(true);
+      setSearchResults([]);
+      Promise.all([searchWikipedia(searchQuery), searchDuckDuckGo(searchQuery), searchStackOverflow(searchQuery)])
+        .then(function(results) {
+          var all = results[1].concat(results[0]).concat(results[2]);
+          if (all.length === 0) { setSearchResults(getFallbackSearch(searchQuery)); }
+          else { setSearchResults(all); }
+          setSearchLoading(false);
+        })
+        .catch(function() {
+          setSearchResults(getFallbackSearch(searchQuery));
+          setSearchLoading(false);
+        });
+    }, [searchQuery]);
+
+    var handleFileSelect = useCallback(function(e) {
+      var files = Array.prototype.slice.call(e.target.files || []);
+      if (files.length === 0) return;
+      var newTracks = files.map(function(file) {
+        return {
+          id: (window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'id-' + Math.random().toString(36).slice(2)),
+          name: file.name.replace(/\.[^.]+$/, ''),
+          size: file.size, file: file, needsRefresh: false
+        };
+      });
+      setTracks(function(prev) { return prev.concat(newTracks); });
+      setTimeout(function() {
+        var first = newTracks[0];
+        if (first.file && audioRef.current) {
+          var url = URL.createObjectURL(first.file);
+          audioRef.current.src = url;
+          audioRef.current.play().catch(function() {});
+          setCurrentTrackIndex(tracks.length);
+          setIsPlaying(true);
+          initAudioContext();
+        }
+      }, 100);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }, [tracks.length, initAudioContext]);
+
+    var handlePlayPause = useCallback(function() {
+      if (currentTrackIndex < 0 && tracks.length > 0) {
+        var playable = -1;
+        for (var i = 0; i < tracks.length; i++) { if (!tracks[i].needsRefresh) { playable = i; break; } }
+        if (playable >= 0) { setCurrentTrackIndex(playable); setIsPlaying(true); }
+        return;
+      }
+      if (!audioRef.current) return;
+      if (isPlaying) { audioRef.current.pause(); }
+      else {
+        initAudioContext();
+        if (audioContextRef.current && audioContextRef.current.state === 'suspended') audioContextRef.current.resume();
+        audioRef.current.play().catch(function() {});
+      }
+      setIsPlaying(!isPlaying);
+    }, [isPlaying, currentTrackIndex, tracks, initAudioContext]);
+
+    var handleTrackSelect = useCallback(function(index) {
+      var track = tracks[index];
+      if (track.needsRefresh) {
+        var input = document.createElement('input');
+        input.type = 'file';
+        input.accept = 'audio/*';
+        input.onchange = function(e) {
+          var file = e.target.files && e.target.files[0];
+          if (file) {
+            setTracks(function(prev) { return prev.map(function(t, i) { return i === index ? Object.assign({}, t, { file: file, needsRefresh: false }) : t; }); });
+            if (audioRef.current) {
+              var url = URL.createObjectURL(file);
+              audioRef.current.src = url;
+              audioRef.current.play().catch(function() {});
+            }
+            setCurrentTrackIndex(index);
+            setIsPlaying(true);
+            initAudioContext();
+          }
+        };
+        input.click();
+        return;
+      }
+      if (track.file && audioRef.current) {
+        var url = URL.createObjectURL(track.file);
+        audioRef.current.src = url;
+        audioRef.current.play().catch(function() {});
+      }
+      setCurrentTrackIndex(index);
+      setIsPlaying(true);
+      initAudioContext();
+    }, [tracks, initAudioContext]);
+
+    var handleTimelineChange = useCallback(function(e) {
+      var time = parseFloat(e.target.value);
+      if (audioRef.current) { audioRef.current.currentTime = time; setCurrentTime(time); }
+    }, []);
+
+    var handleRemoveTrack = useCallback(function(index) {
+      setTracks(function(prev) { return prev.filter(function(_, i) { return i !== index; }); });
+      if (currentTrackIndex === index) {
+        setCurrentTrackIndex(-1); setIsPlaying(false);
+        if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = ''; }
+      } else if (currentTrackIndex > index) {
+        setCurrentTrackIndex(function(p) { return p - 1; });
+      }
+    }, [currentTrackIndex]);
+
+    var currentTrack = currentTrackIndex >= 0 ? tracks[currentTrackIndex] : null;
+    var sysInfo = getSystemInfo();
+
+    // ===== RENDER =====
+    return h('div', { className: 'min-h-screen flex flex-col', style: { backgroundColor: 'var(--bg-primary)', padding: '10px', paddingBottom: '80px' } },
+      h('audio', { ref: audioRef, preload: 'metadata' }),
+
+      // HEADER
+      h('header', { className: 'panel p-3 mb-[10px] animate-fade-in' },
+        h('div', { className: 'flex items-center justify-between flex-wrap gap-3' },
+          h('div', { className: 'flex items-center gap-3' },
+            h('div', { className: 'w-10 h-10 flex items-center justify-center text-white font-bold text-sm', style: { backgroundColor: 'var(--accent-color)', borderRadius: 'var(--radius)' } }, 'HUB'),
+            h('div', null,
+              h('h1', { className: 'text-lg font-bold', style: { color: 'var(--text-primary)' } }, 'Hub'),
+              h('p', { className: 'text-xs', style: { color: 'var(--text-secondary)' } }, 'News / Search / Music')
+            )
+          ),
+          h('div', { className: 'flex items-center gap-2 flex-wrap' },
+            h('button', { onClick: function() { setTimeFormat(function(p) { return p === '24h' ? '12h' : p === '12h' ? 'date' : '24h'; }); }, className: 'btn flex items-center gap-2 px-3 py-1.5', style: { color: 'var(--text-primary)' } },
+              h(Icon, { name: 'clock', size: 16 }),
+              h('span', { className: 'text-sm font-mono font-medium' }, clockDisplay)
+            ),
+            h('button', { onClick: function() { setSettings(function(s) { return Object.assign({}, s, { style: s.style === 'metro' ? 'ios' : 'metro' }); }); }, className: 'btn px-3 py-1.5 text-xs font-semibold', style: { backgroundColor: 'var(--accent-color)', color: '#fff' } }, settings.style === 'metro' ? 'Metro' : 'iOS 18'),
+            h('button', { onClick: function() { setShowSettings(!showSettings); }, className: 'btn w-9 h-9 flex items-center justify-center panel', style: { color: 'var(--accent-color)' } }, h(Icon, { name: 'settings', size: 18 }))
+          )
+        )
+      ),
+
+      // SETTINGS
+      showSettings && h('div', { className: 'panel mb-[10px] animate-slide-up overflow-hidden' },
+        h('div', { className: 'flex items-center justify-between px-3 py-2', style: { borderBottom: '1px solid var(--border-color)' } },
+          h('h2', { className: 'text-sm font-bold', style: { color: 'var(--text-primary)' } }, 'Settings'),
+          h('button', { onClick: function() { setShowSettings(false); }, className: 'btn text-xs px-2 py-1 font-semibold', style: { color: 'var(--accent-color)' } }, 'Done')
+        ),
+        h('div', { className: 'p-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-3 gap-y-2' },
+          h('div', null,
+            h('label', { className: 'text-[10px] uppercase tracking-wide font-bold mb-1 block', style: { color: 'var(--text-secondary)' } }, 'Theme'),
+            h('div', { className: 'flex gap-1.5' },
+              h('button', { onClick: function() { setSettings(function(s) { return Object.assign({}, s, { theme: 'light' }); }); }, className: 'btn flex-1 py-1.5 text-xs font-medium panel', style: { backgroundColor: settings.theme === 'light' ? 'var(--accent-color)' : undefined, color: settings.theme === 'light' ? '#fff' : 'var(--text-primary)' } }, 'Light'),
+              h('button', { onClick: function() { setSettings(function(s) { return Object.assign({}, s, { theme: 'dark' }); }); }, className: 'btn flex-1 py-1.5 text-xs font-medium panel', style: { backgroundColor: settings.theme === 'dark' ? 'var(--accent-color)' : undefined, color: settings.theme === 'dark' ? '#fff' : 'var(--text-primary)' } }, 'Dark')
+            )
+          ),
+          h('div', null,
+            h('label', { className: 'text-[10px] uppercase tracking-wide font-bold mb-1 block', style: { color: 'var(--text-secondary)' } }, 'Accent'),
+            h('div', { className: 'flex gap-1.5' },
+              ['blue', 'green', 'red', 'purple'].map(function(color) {
+                var c = settings.style === 'ios' ? IOS_ACCENT_COLORS[color] : ACCENT_COLORS[color];
+                return h('button', { key: color, onClick: function() { setSettings(function(s) { return Object.assign({}, s, { accentColor: color }); }); }, className: 'btn flex-1 py-1.5 text-[10px] font-medium panel flex items-center justify-center gap-1', style: { border: settings.accentColor === color ? '2px solid ' + c : '2px solid transparent' } },
+                  h('span', { className: 'w-2 h-2 rounded-full inline-block', style: { backgroundColor: c } }),
+                  color
+                );
+              })
+            )
+          ),
+          h('div', { className: 'sm:col-span-2 lg:col-span-3' },
+            h('label', { className: 'text-[10px] uppercase tracking-wide font-bold mb-1 block', style: { color: 'var(--text-secondary)' } }, 'System'),
+            h('div', { className: 'flex flex-wrap gap-2 text-xs', style: { color: 'var(--text-secondary)' } },
+              h('span', { className: 'px-2 py-0.5 rounded', style: { backgroundColor: 'var(--bg-tertiary)' } }, 'OS: ' + sysInfo.os),
+              h('span', { className: 'px-2 py-0.5 rounded', style: { backgroundColor: 'var(--bg-tertiary)' } }, 'Browser: ' + sysInfo.browser)
+            )
+          )
+        )
+      ),
+
+      // TABS
+      h('div', { className: 'flex mb-[10px] gap-1 panel p-1' },
+        h('button', { onClick: function() { setActiveTab('feed'); }, className: 'btn flex-1 py-2.5 text-sm font-semibold flex items-center justify-center gap-2', style: { color: activeTab === 'feed' ? 'var(--accent-color)' : 'var(--text-secondary)', opacity: activeTab === 'feed' ? 1 : 0.5 } },
+          h(Icon, { name: 'feed', size: 16 }), 'Feed'
+        ),
+        h('button', { onClick: function() { setActiveTab('search'); }, className: 'btn flex-1 py-2.5 text-sm font-semibold flex items-center justify-center gap-2', style: { color: activeTab === 'search' ? 'var(--accent-color)' : 'var(--text-secondary)', opacity: activeTab === 'search' ? 1 : 0.5 } },
+          h(Icon, { name: 'search', size: 16 }), 'HubSearch'
+        )
+      ),
+
+      // CONTENT
+      h('main', { className: 'flex-1 mb-[10px]' },
+
+        // FEED
+        activeTab === 'feed' && h('div', { className: 'panel p-4 animate-fade-in' },
+          h('div', { className: 'flex items-center justify-between mb-4' },
+            h('h2', { className: 'text-lg font-bold', style: { color: 'var(--text-primary)' } }, 'News Feed'),
+            h('button', { onClick: function() { setNewsLoading(true); fetchNews().then(function(items) { setNews(items); setNewsLoading(false); }); }, className: 'btn text-xs px-3 py-1.5', style: { color: 'var(--accent-color)', border: '1px solid var(--accent-color)' }, disabled: newsLoading }, newsLoading ? 'Loading...' : 'Refresh')
+          ),
+          newsLoading ? h('div', { className: 'text-center py-12' },
+            h('div', { className: 'spinner', style: { margin: '0 auto 12px' } }),
+            h('p', { style: { color: 'var(--text-secondary)' } }, 'Loading news...')
+          ) : news.length === 0 ? h('div', { className: 'text-center py-12' },
+            h('p', { className: 'text-lg mb-2', style: { color: 'var(--text-primary)' } }, 'No news available'),
+            h('p', { className: 'text-sm', style: { color: 'var(--text-secondary)' } }, 'Try clicking Refresh')
+          ) : h('div', null,
+            h('div', { className: 'mb-3 flex flex-wrap gap-2' },
+              RSS_FEEDS.map(function(feed) {
+                return h('span', { key: feed.name, className: 'text-xs px-2 py-1 rounded', style: { backgroundColor: feed.color + '15', color: feed.color, border: '1px solid ' + feed.color + '30' } }, feed.name);
+              })
+            ),
+            h('div', { className: 'space-y-2 max-h-[calc(100vh-350px)] overflow-y-auto scrollbar-hide' },
+              news.map(function(item) {
+                return h('div', { key: item.id },
+                  h('div', { onClick: function() { handleNewsClick(item); }, className: 'news-card block p-3 rounded-lg cursor-pointer', style: { borderLeft: '3px solid ' + item.sourceColor } },
+                    h('div', { className: 'flex items-center gap-2 mb-1' },
+                      h('span', { className: 'text-xs font-bold px-2 py-0.5 rounded', style: { backgroundColor: item.sourceColor + '20', color: item.sourceColor } }, item.source),
+                      h('span', { className: 'text-xs', style: { color: 'var(--text-secondary)' } }, new Date(item.pubDate).toLocaleDateString('ru-RU'))
+                    ),
+                    h('h3', { className: 'text-sm font-semibold mb-1', style: { color: 'var(--text-primary)' } }, item.title),
+                    item.description && h('p', { className: 'text-xs leading-relaxed', style: { color: 'var(--text-secondary)', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, item.description)
+                  ),
+                  selectedNews && selectedNews.id === item.id && h('div', { className: 'mt-2 p-4 rounded-lg animate-fade-in', style: { backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', borderLeft: '3px solid ' + item.sourceColor } },
+                    newsContentLoading ? h('div', { className: 'flex items-center justify-center py-8' },
+                      h('div', { className: 'spinner-sm', style: { color: 'var(--accent-color)' } }),
+                      h('span', { className: 'ml-3 text-sm', style: { color: 'var(--text-secondary)' } }, 'Loading content...')
+                    ) : h(React.Fragment, null,
+                      h('div', { className: 'text-sm leading-relaxed mb-4 max-h-96 overflow-y-auto scrollbar-hide', style: { color: 'var(--text-primary)' } },
+                        h('p', null, item.description)
+                      ),
+                      h('div', { className: 'flex gap-2 pt-3', style: { borderTop: '1px solid var(--border-color)' } },
+                        h('a', { href: item.link, target: '_blank', rel: 'noopener noreferrer', className: 'btn flex-1 py-2 text-sm font-semibold flex items-center justify-center gap-2', style: { backgroundColor: item.sourceColor, color: '#fff', textDecoration: 'none' } }, 'Перейти к источнику'),
+                        h('button', { onClick: function() { setSelectedNews(null); }, className: 'btn px-4 py-2 text-sm', style: { color: 'var(--text-secondary)', border: '1px solid var(--border-color)' } }, 'Закрыть')
+                      )
+                    )
+                  )
+                );
+              })
+            )
+          )
+        ),
+
+        // SEARCH
+        activeTab === 'search' && h('div', { className: 'panel p-6 animate-fade-in' },
+          h('div', { className: 'max-w-3xl mx-auto' },
+            h('div', { className: 'text-center mb-6' },
+              h('h2', { className: 'text-2xl font-bold mb-2', style: { color: 'var(--accent-color)' } }, 'HubSearch'),
+              h('p', { className: 'text-sm', style: { color: 'var(--text-secondary)' } }, 'Поиск по Wikipedia, DuckDuckGo и Stack Overflow')
+            ),
+            h('div', { className: 'flex gap-2 mb-6' },
+              h('input', { type: 'text', value: searchQuery, onChange: function(e) { setSearchQuery(e.target.value); }, onKeyDown: function(e) { if (e.key === 'Enter') handleSearch(); }, placeholder: 'Введите запрос...', className: 'input flex-1 px-4 py-3 text-base', autoFocus: true }),
+              h('button', { onClick: handleSearch, disabled: searchLoading, className: 'btn px-6 py-3 text-sm font-semibold text-white flex items-center gap-2', style: { backgroundColor: 'var(--accent-color)', opacity: searchLoading ? 0.6 : 1 } },
+                searchLoading ? h(React.Fragment, null, h('span', { className: 'spinner-sm', style: { borderTopColor: '#fff' } }), 'Searching...') : h(React.Fragment, null, h(Icon, { name: 'search', size: 16 }), 'Search')
+              )
+            ),
+            searchResults.length > 0 && h('div', { className: 'space-y-3' },
+              h('span', { className: 'text-sm font-semibold', style: { color: 'var(--text-primary)' } }, 'Найдено результатов: ' + searchResults.length),
+              searchResults.map(function(result) {
+                return h('a', { key: result.id, href: result.url, target: '_blank', rel: 'noopener noreferrer', className: 'block p-4 rounded-lg', style: { backgroundColor: 'var(--bg-secondary)', borderLeft: '3px solid ' + result.sourceColor, textDecoration: 'none' } },
+                  h('span', { className: 'text-xs font-bold px-2 py-0.5 rounded mb-1 inline-block', style: { backgroundColor: result.sourceColor + '20', color: result.sourceColor } }, result.source),
+                  h('h3', { className: 'text-base font-semibold mb-1', style: { color: 'var(--accent-color)' } }, result.title),
+                  h('p', { className: 'text-sm', style: { color: 'var(--text-secondary)' } }, result.snippet)
+                );
+              })
+            ),
+            !searchLoading && searchResults.length === 0 && searchQuery && h('div', { className: 'text-center py-12' },
+              h('p', { className: 'text-lg mb-2', style: { color: 'var(--text-primary)' } }, 'Ничего не найдено')
+            ),
+            !searchQuery && h('div', { className: 'text-center py-12' },
+              h('div', { className: 'inline-block p-6 rounded-full mb-4', style: { backgroundColor: 'var(--bg-secondary)' } },
+                h('div', { style: { color: 'var(--text-secondary)' } }, h(Icon, { name: 'search', size: 48 }))
+              ),
+              h('p', { className: 'text-sm', style: { color: 'var(--text-secondary)' } }, 'Введите запрос, чтобы начать поиск')
+            )
+          )
+        )
+      ),
+
+      // PLAYER
+      h('input', { ref: fileInputRef, type: 'file', multiple: true, accept: 'audio/*', onChange: handleFileSelect, style: { display: 'none' } }),
+      h('div', { className: 'fixed bottom-0 left-0 right-0 animate-slide-up', style: { backgroundColor: 'var(--player-bg)', borderTop: '1px solid var(--player-border)', boxShadow: '0 -2px 10px rgba(0,0,0,0.2)' } },
+        currentTrack && !currentTrack.needsRefresh ? h(React.Fragment, null,
+          h('div', { className: 'px-3 pt-1' },
+            h('div', { className: 'relative h-0.5 rounded-full overflow-hidden', style: { backgroundColor: 'var(--player-track)' } },
+              h('div', { className: 'absolute top-0 left-0 h-full rounded-full', style: { width: duration > 0 ? ((currentTime / duration) * 100) + '%' : '0%', backgroundColor: 'var(--accent-color)' } }),
+              h('input', { type: 'range', min: 0, max: duration || 0, value: currentTime, onChange: handleTimelineChange, className: 'absolute top-0 left-0 w-full h-full opacity-0 cursor-pointer', style: { zIndex: 1 } })
+            )
+          ),
+          h('div', { className: 'flex items-center justify-between px-3 py-2' },
+            h('div', { className: 'flex items-center gap-2 flex-1 min-w-0' },
+              h('div', { className: 'w-9 h-9 rounded flex items-center justify-center flex-shrink-0', style: { backgroundColor: 'var(--player-track)', color: 'var(--player-text)' } }, h(Icon, { name: 'music', size: 16 })),
+              h('div', { className: 'min-w-0 flex-1' },
+                h('p', { className: 'text-xs font-semibold truncate', style: { color: 'var(--player-text)' } }, currentTrack.name),
+                h('p', { className: 'text-[10px] truncate', style: { color: 'var(--player-text-secondary)' } }, 'Unknown Artist')
+              )
+            ),
+            h('div', { className: 'flex items-center gap-2' },
+              h('button', { onClick: function() { if (currentTrackIndex > 0) { setCurrentTrackIndex(function(p) { return p - 1; }); setIsPlaying(true); } }, className: 'btn w-8 h-8 flex items-center justify-center', style: { color: 'var(--player-text)' } }, h(Icon, { name: 'prev', size: 16 })),
+              h('button', { onClick: handlePlayPause, className: 'btn w-10 h-10 flex items-center justify-center rounded-full text-white', style: { backgroundColor: 'var(--accent-color)' } }, isPlaying ? h(Icon, { name: 'pause', size: 18 }) : h(Icon, { name: 'play', size: 18 })),
+              h('button', { onClick: function() { if (currentTrackIndex < tracks.length - 1) { setCurrentTrackIndex(function(p) { return p + 1; }); setIsPlaying(true); } }, className: 'btn w-8 h-8 flex items-center justify-center', style: { color: 'var(--player-text)' } }, h(Icon, { name: 'next', size: 16 }))
+            ),
+            h('div', { className: 'flex items-center gap-2 flex-1 justify-end' },
+              h('button', { onClick: function() { setShowQueue(!showQueue); }, className: 'btn w-8 h-8 flex items-center justify-center', style: { color: showQueue ? 'var(--accent-color)' : 'var(--player-text-secondary)' } }, h(Icon, { name: 'queue', size: 16 })),
+              h('div', { className: 'hidden sm:flex items-center gap-1', style: { color: 'var(--player-text-secondary)' } },
+                h(Icon, { name: 'volume', size: 14 }),
+                h('input', { type: 'range', min: 0, max: 1, step: 0.01, value: volume, onChange: function(e) { setVolume(parseFloat(e.target.value)); }, className: 'volume-slider w-16' })
+              )
+            )
+          ),
+          showQueue && h('div', { className: 'border-t px-3 py-2', style: { borderColor: 'var(--player-border)', backgroundColor: 'var(--player-bg)' } },
+            h('div', { className: 'flex items-center justify-between mb-2' },
+              h('span', { className: 'text-xs font-semibold', style: { color: 'var(--player-text)' } }, 'Очередь (' + tracks.length + ')'),
+              h('button', { onClick: function() { if (fileInputRef.current) fileInputRef.current.click(); }, className: 'btn text-[10px] px-2 py-1 rounded', style: { color: 'var(--accent-color)', border: '1px solid var(--accent-color)' } }, '+ Добавить')
+            ),
+            h('div', { className: 'max-h-32 overflow-y-auto scrollbar-hide space-y-0.5' },
+              tracks.map(function(track, index) {
+                return h('div', { key: track.id, className: 'flex items-center justify-between py-1 px-2 rounded cursor-pointer', style: { backgroundColor: currentTrackIndex === index ? 'var(--player-track)' : 'transparent', borderLeft: currentTrackIndex === index ? '2px solid var(--accent-color)' : '2px solid transparent' }, onClick: function() { handleTrackSelect(index); } },
+                  h('div', { className: 'flex items-center gap-2 flex-1 min-w-0' },
+                    h('span', { className: 'text-[10px] w-4 text-center font-mono', style: { color: currentTrackIndex === index ? 'var(--accent-color)' : 'var(--player-text-secondary)' } }, currentTrackIndex === index && isPlaying ? '\u25B6' : (index + 1)),
+                    h('div', { className: 'min-w-0 flex-1' }, h('p', { className: 'text-xs truncate', style: { color: track.needsRefresh ? 'var(--player-text-secondary)' : 'var(--player-text)' } }, track.name))
+                  ),
+                  h('button', { onClick: function(e) { e.stopPropagation(); handleRemoveTrack(index); }, className: 'btn p-0.5', style: { color: '#ff003c' } }, h(Icon, { name: 'close', size: 12 }))
+                );
+              })
+            )
+          )
+        ) : h('div', { className: 'flex items-center justify-between px-3 py-2' },
+          h('div', { className: 'flex items-center gap-2' },
+            h('div', { className: 'w-9 h-9 rounded flex items-center justify-center', style: { backgroundColor: 'var(--player-track)', color: 'var(--player-text)' } }, h(Icon, { name: 'music', size: 16 })),
+            h('div', null,
+              h('p', { className: 'text-xs font-semibold', style: { color: 'var(--player-text)' } }, tracks.length > 0 ? tracks.length + ' треков' : 'Нет треков'),
+              h('p', { className: 'text-[10px]', style: { color: 'var(--player-text-secondary)' } }, 'Добавьте музыку')
+            )
+          ),
+          h('button', { onClick: function() { if (fileInputRef.current) fileInputRef.current.click(); }, className: 'btn px-3 py-1.5 text-xs font-semibold text-white rounded', style: { backgroundColor: 'var(--accent-color)' } }, '+ Добавить')
+        )
+      )
+    );
+  }
+
+  // Рендер
+  try {
+    ReactDOM.createRoot(document.getElementById('root')).render(h(App));
+  } catch (e) {
+    document.getElementById('error-box').style.display = 'block';
+    document.getElementById('error-box').textContent = 'Render error:\n' + e.message + '\n' + e.stack;
+  }
+})();
+</script>
+</body>
+</html>
